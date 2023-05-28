@@ -157,6 +157,7 @@ class Trainer:
                 self.scaler.update()
                 self.optimizer.zero_grad()
                 x, y = None, None
+                torch.cuda.empty_cache()
 
                 epoch_iterator.set_description(
                     f"Training ({global_step} / {self.max_epoch} Steps) (loss={loss.item():2.5f})")
@@ -188,7 +189,8 @@ class Trainer:
             dice_val, hausdorff_val, loss_val = self.validation(epoch_iterator_val)
             torch.cuda.empty_cache()
             epoch_iterator_val = None
-            self.scheduler.step(loss_val)
+            # self.scheduler.step(loss_val)
+            self.scheduler.step()
             # self.epoch_loss_values.append(epoch_loss)
             train_info[global_step] = {
                 'loss_val': loss_val,
