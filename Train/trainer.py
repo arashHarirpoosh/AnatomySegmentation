@@ -4,7 +4,7 @@ import json
 import shutil
 import tempfile
 
-from EarlyStopping import EarlyStopping
+from .EarlyStopping import EarlyStopping
 
 from tqdm import tqdm
 
@@ -37,7 +37,7 @@ from monai.metrics import DiceMetric, HausdorffDistanceMetric, SurfaceDiceMetric
 
 from monai.data import decollate_batch
 
-from surface_distance import metrics as sd
+from .surface_distance import metrics as sd
 
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CyclicLR, PolynomialLR
@@ -70,9 +70,9 @@ class Trainer:
         self.early_stopping = EarlyStopping(tolerance=10, min_delta=0.001)
         self.post_pred = AsDiscrete(argmax=True, to_onehot=self.number_of_classes)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.scheduler = ReduceLROnPlateau(self.optimizer, patience=3, verbose=True, mode='min',
-                                           min_lr=1e-8, factor=0.25)
-        # self.scheduler = PolynomialLR(self.optimizer, total_iters=4, power=1.0)
+        # self.scheduler = ReduceLROnPlateau(self.optimizer, patience=3, verbose=True, mode='min',
+        #                                    min_lr=1e-8, factor=0.25)
+        self.scheduler = PolynomialLR(self.optimizer, total_iters=self.max_epoch, power=0.9, verbose=True)
         self.dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
         self.hausdorff_metric = HausdorffDistanceMetric(include_background=False, get_not_nans=False, reduction="none",
                                                         distance_metric="euclidean")
