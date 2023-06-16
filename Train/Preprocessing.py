@@ -24,10 +24,13 @@ from monai.transforms import (
     RandGaussianNoised,
     RandGaussianSmoothd,
     RandAdjustContrastd,
+    RandScaleIntensityd,
     RandAffined,
+    RandZoomd,
 )
 from monai.networks.nets import SwinUNETR
 
+spatial_size = (128, 128, 128)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -36,10 +39,17 @@ def get_train_transform(num_samples):
         [
             LoadImaged(keys=["image", "label"], ensure_channel_first=True, image_only=False),
 
-            RandGaussianNoised(keys=["image"], prob=0.1, mean=0.0, std=0.1),
-            RandGaussianSmoothd(keys=["image"], prob=0.1),
-            # RandAdjustContrastd(keys=["image"], prob=0.50),
-            RandAffined(keys=["image", "label"], mode=['bilinear', 'nearest'], prob=0.1),
+            RandGaussianNoised(keys=["image"], prob=0.15, mean=0.0, std=0.1),  # ToDo: prob=0.15
+            RandGaussianSmoothd(keys=["image"], sigma_x=(0.5, 1.5), sigma_y=(0.5, 1.5), sigma_z=(0.5, 1.5),
+                                approx='sampled', prob=0.2),  # ToDo: prob=0.2
+            RandAdjustContrastd(keys=["image"], gamma=(0.7, 1.5), prob=0.5),  # ToDo: prob=0.3
+            RandScaleIntensityd(keys=["image"], factors=(0.65, 1.5), prob=0.15),
+            RandAffined(keys=["image", "label"],
+                        rotate_range=(0.5235987755982988, 0.5235987755982988, 0.5235987755982988),
+                        mode=['bilinear', 'nearest'], prob=0.2, device=device),
+            RandAffined(keys=["image", "label"], scale_range=(0.3, 0.3, 0.3), mode=['bilinear', 'nearest'], prob=0.2,
+                        device=device),
+            RandZoomd(keys=["image", "label"], min_zoom=0.5, max_zoom=1, mode=['bilinear', 'nearest'], prob=0.25),
 
             ScaleIntensityRanged(
                 keys=["image"],
@@ -49,16 +59,17 @@ def get_train_transform(num_samples):
                 b_max=1.0,
                 clip=True,
             ),
+            RandScaleIntensityd(keys=["image"], factors=(0.7, 1.3), prob=0.15),
             CropForegroundd(keys=["image", "label"], source_key="image"),
             Orientationd(keys=["image", "label"], axcodes="RAS"),
             Spacingd(
                 keys=["image", "label"],
-                pixdim=(1.5, 1.5, 1.5),
-                #             pixdim=(3.0, 3.0, 3.0),
+                pixdim=(2.0, 2.0, 2.0),
+                # pixdim=(1.5, 1.5, 1.5),
                 mode=("bilinear", "nearest"),
             ),
             SpatialPadd(
-                spatial_size=(96, 96, 96),
+                spatial_size=spatial_size,
                 keys=["image", "label"]
             ),
             EnsureTyped(keys=["image", "label"], device=device, track_meta=False),
@@ -66,7 +77,7 @@ def get_train_transform(num_samples):
             RandCropByPosNegLabeld(
                 keys=["image", "label"],
                 label_key="label",
-                spatial_size=(96, 96, 96),
+                spatial_size=spatial_size,
                 pos=1,
                 neg=1,
                 num_samples=num_samples,
@@ -75,31 +86,32 @@ def get_train_transform(num_samples):
                 allow_smaller=True
             ),
 
-            #         RandFlipd(
-            #             keys=["image", "label"],
-            #             spatial_axis=[0],
-            #             prob=0.10,
-            #         ),
-            #         RandFlipd(
-            #             keys=["image", "label"],
-            #             spatial_axis=[1],
-            #             prob=0.10,
-            #         ),
-            #         RandFlipd(
-            #             keys=["image", "label"],
-            #             spatial_axis=[2],
-            #             prob=0.10,
-            #         ),
-            RandRotate90d(
-                keys=["image", "label"],
-                prob=0.10,
-                max_k=3,
-            ),
-            RandShiftIntensityd(
-                keys=["image"],
-                offsets=0.10,
-                prob=0.50,
-            ),
+            # RandFlipd(
+            #    keys=["image", "label"],
+            #    spatial_axis=[0],
+            #   prob=0.10,
+            # ),
+            # RandFlipd(
+            #    keys=["image", "label"],
+            #    spatial_axis=[1],
+            #    prob=0.10,
+            # ),
+            # RandFlipd(
+            #    keys=["image", "label"],
+            #    spatial_axis=[2],
+            #    prob=0.10,
+            # ),
+
+            # RandRotate90d(
+            #     keys=["image", "label"],
+            #     prob=0.15,
+            #     max_k=3,
+            # ),
+            # RandShiftIntensityd(
+            #     keys=["image"],
+            #     offsets=0.10,
+            #     prob=0.50,
+            # ),
 
         ]
     )
@@ -128,7 +140,7 @@ def get_train_transform_unet():
                 mode=("bilinear", "nearest"),
             ),
             SpatialPadd(
-                spatial_size=(96, 96, 96),
+                spatial_size=spatial_size,
                 keys=["image", "label"]
             ),
             EnsureTyped(keys=["image", "label"], device=device, track_meta=False),
@@ -189,7 +201,7 @@ def get_validation_transform():
                 mode=("bilinear", "nearest"),
             ),
             SpatialPadd(
-                spatial_size=(96, 96, 96),
+                spatial_size=spatial_size,
                 keys=["image", "label"]
             ),
             EnsureTyped(keys=["image", "label"], device=device, track_meta=True),
@@ -206,7 +218,7 @@ def generate_file_path(root_path, label_name):
             nib.load(f'{root_path}/{i}/segments/{label_name}.nii.gz').get_fdata(dtype=np.float32).max() > 0]
 
 
-def filter_collate_fn(data_list, pad_to_shape=(96, 96, 96)):
+def filter_collate_fn(data_list, pad_to_shape=spatial_size):
     filtered_data = []
     print(len(data_list))
     for d in data_list:

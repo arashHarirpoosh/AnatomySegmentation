@@ -47,7 +47,8 @@ print_config()
 
 class Trainer:
 
-    def __init__(self, model, loss_function, optimizer, number_of_classes, num_samples, model_root_path, max_epoch):
+    def __init__(self, model, loss_function, optimizer, number_of_classes, num_samples, model_root_path, max_epoch,
+                 spatial_size=(96, 96, 96)):
         self.model = model
         # self.global_step = None
         # self.dice_val_best = None
@@ -58,6 +59,7 @@ class Trainer:
         # self.global_step_best = None
         # self.epoch_loss_values = None
         self.num_samples = num_samples
+        self.spatial_size = spatial_size
         self.loss_function = loss_function
         self.model_root_path = model_root_path
         self.scaler = torch.cuda.amp.GradScaler()
@@ -66,13 +68,18 @@ class Trainer:
         self.model_path = f'{model_root_path}/best_metric_model.pth'
         self.test_info_path = f'{model_root_path}/test_metrics.json'
         self.post_label = AsDiscrete(to_onehot=self.number_of_classes)
+        self.last_model_path = f'{model_root_path}/last_metric_model.pth'
         self.best_epoch_path = f'{model_root_path}/best_epochs_info.json'
-        self.early_stopping = EarlyStopping(tolerance=10, min_delta=0.001)
+        self.early_stopping = EarlyStopping(tolerance=50, min_delta=1e-5, mode='max')
         self.post_pred = AsDiscrete(argmax=True, to_onehot=self.number_of_classes)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # self.scheduler = ReduceLROnPlateau(self.optimizer, patience=3, verbose=True, mode='min',
         #                                    min_lr=1e-8, factor=0.25)
-        self.scheduler = PolynomialLR(self.optimizer, total_iters=self.max_epoch, power=0.9, verbose=True)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.6,
+                                           patience=10,
+                                           verbose=True, threshold=1e-3,
+                                           threshold_mode="abs")
+        # self.scheduler = PolynomialLR(self.optimizer, total_iters=self.max_epoch, power=0.9, verbose=True)
         self.dice_metric = DiceMetric(include_background=False, reduction="mean", get_not_nans=False)
         self.hausdorff_metric = HausdorffDistanceMetric(include_background=False, get_not_nans=False, reduction="none",
                                                         distance_metric="euclidean")
@@ -106,7 +113,8 @@ class Trainer:
                         val_inputs, val_labels = (batch["image"].cuda(), batch["label"].cuda())
 
                         with torch.cuda.amp.autocast():
-                            val_outputs = sliding_window_inference(val_inputs, (96, 96, 96), self.num_samples, model)
+                            val_outputs = sliding_window_inference(val_inputs, self.spatial_size, self.num_samples,
+                                                                   model)
                             loss = self.loss_function(val_outputs, val_labels).item()
                         # val_labels = [self.post_label(val_label_tensor) for val_label_tensor in decollate_batch(val_labels)]
                         # val_outputs = [self.post_pred(val_pred_tensor) for val_pred_tensor in decollate_batch(val_outputs)]
@@ -189,8 +197,8 @@ class Trainer:
             dice_val, hausdorff_val, loss_val = self.validation(epoch_iterator_val)
             torch.cuda.empty_cache()
             epoch_iterator_val = None
-            # self.scheduler.step(loss_val)
-            self.scheduler.step()
+            self.scheduler.step(epoch_loss)
+            # self.scheduler.step()
             # self.epoch_loss_values.append(epoch_loss)
             train_info[global_step] = {
                 'loss_val': loss_val,
@@ -200,8 +208,10 @@ class Trainer:
             with open(self.train_info_path, 'w') as file:
                 json.dump(train_info, file, indent=4)
             global_step += 1
+            self.plot_train(train_info)
             # self.metric_values.append(dice_val)
-            self.early_stopping(loss_val)
+            # self.early_stopping(loss_val, self.optimizer.param_groups[0]['lr'])
+            self.early_stopping(dice_val, self.optimizer.param_groups[0]['lr'])
             print(f'Mean Hausdorff disatnce: {hausdorff_val}')
             if dice_val > dice_val_best:
                 dice_val_best = dice_val
@@ -214,6 +224,7 @@ class Trainer:
                     "Model Was Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(dice_val_best, dice_val)
                 )
             else:
+                torch.save(self.model.state_dict(), self.last_model_path)
                 print(
                     "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
                         dice_val_best, dice_val
@@ -244,25 +255,90 @@ class Trainer:
         plt.xticks(np.arange(0, len(x), 5))
         plt.xlabel("Epochs")
         plt.plot(x, y)
+        plt.savefig('train.png')
         plt.show()
+
+    def plot_train(self, train_info):
+        plt.figure("train", (12, 6))
+
+        plt.subplot(1, 2, 1)
+        plt.title("Iteration Average Loss")
+        x = list(train_info.keys())
+        y = [v['loss_train'] for k, v in train_info.items()]
+        plt.xticks(np.arange(0, len(x), 5))
+        plt.xlabel("Epochs")
+        plt.plot(x, y, label='Train')
+        y = [v['loss_val'] for k, v in train_info.items()]
+        plt.plot(x, y, label='Validation')
+        plt.legend()
+        plt.subplot(1, 2, 2)
+        plt.title("Val Mean Dice")
+        y = [v['metric_val'] for k, v in train_info.items()]
+        plt.xticks(np.arange(0, len(x), 5))
+        plt.xlabel("Epochs")
+        plt.plot(x, y)
+        plt.savefig('train.png')
+        plt.close()
 
     def continue_train(self, train_loader, val_loader, max_epoch):
         self.load_best_model()
-        train_info = {}
-        global_step = 0
-        dice_val_best = -1.0
-        best_epochs_info = {}
+        self.model = self.model.to(self.device)
         with open(self.train_info_path, "r") as file:
             train_info = json.load(file)
         with open(self.best_epoch_path, "r") as file:
             best_epochs_info = json.load(file)
-        global_step = list(best_epochs_info.keys())[-1]
-        dice_val_best = list(best_epochs_info.values())[-1]
-        for k in train_info.keys():
-            if k > global_step:
+        global_step = int(list(best_epochs_info.keys())[-1]) - 1
+        dice_val_best = float(list(best_epochs_info.values())[-1])
+        for k in list(train_info.keys()):
+            if int(k) > global_step:
                 del train_info[k]
-
-        print(dice_val_best, global_step, train_info)
+        # print(dice_val_best, global_step, train_info)
+        torch.backends.cudnn.benchmark = True
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        while global_step < self.max_epoch:
+            epoch_loss = self.train_one_epoch(train_loader, global_step)
+            # Free GPU memory
+            torch.cuda.empty_cache()
+            epoch_iterator_val = tqdm(val_loader, desc="Validate", dynamic_ncols=True)
+            dice_val, hausdorff_val, loss_val = self.validation(epoch_iterator_val)
+            torch.cuda.empty_cache()
+            epoch_iterator_val = None
+            self.scheduler.step(epoch_loss)
+            # self.scheduler.step()
+            # self.epoch_loss_values.append(epoch_loss)
+            train_info[global_step] = {
+                'loss_val': loss_val,
+                'metric_val': dice_val,
+                'loss_train': epoch_loss,
+            }
+            with open(self.train_info_path, 'w') as file:
+                json.dump(train_info, file, indent=4)
+            global_step += 1
+            self.plot_train(train_info)
+            # self.metric_values.append(dice_val)
+            # self.early_stopping(loss_val)
+            self.early_stopping(dice_val, self.optimizer.param_groups[0]['lr'])
+            print(f'Mean Hausdorff disatnce: {hausdorff_val}')
+            if dice_val > dice_val_best:
+                dice_val_best = dice_val
+                # self.global_step_best = global_step
+                best_epochs_info[global_step] = dice_val_best
+                with open(self.best_epoch_path, 'w') as file:
+                    json.dump(best_epochs_info, file, indent=4)
+                torch.save(self.model.state_dict(), self.model_path)
+                print(
+                    "Model Was Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(dice_val_best, dice_val)
+                )
+            else:
+                torch.save(self.model.state_dict(), self.last_model_path)
+                print(
+                    "Model Was Not Saved ! Current Best Avg. Dice: {} Current Avg. Dice: {}".format(
+                        dice_val_best, dice_val
+                    )
+                )
+            # early stopping
+            if self.early_stopping.early_stop:
+                break
 
     def load_best_model(self):
         self.model.load_state_dict(torch.load(self.model_path))
@@ -308,7 +384,7 @@ class Trainer:
                         test_inputs, test_labels = (batch["image"].cuda(), batch["label"].cuda())
                         with torch.cuda.amp.autocast():
                             #                 test_outputs = sliding_window_inference(test_inputs, (96, 96, 96), num_samples, model, overlap=0.8)
-                            test_outputs = sliding_window_inference(test_inputs, (96, 96, 96), self.num_samples,
+                            test_outputs = sliding_window_inference(test_inputs, self.spatial_size, self.num_samples,
                                                                     model, overlap=0.5, mode='gaussian'
                                                                     )
                             loss = self.loss_function(test_outputs.detach(), test_labels.detach()).item()
@@ -322,10 +398,11 @@ class Trainer:
                         #                       [self.post_pred(test_pred_tensor).detach().cpu() for test_pred_tensor in
                         #                        decollate_batch(test_outputs)]])
                         mask_gt = \
-                        [self.post_label(test_label_tensor).detach().cpu().astype(bool) for test_label_tensor in
-                         decollate_batch(test_labels)][0]
-                        mask_prep = [self.post_pred(test_pred_tensor).detach().cpu().astype(bool) for test_pred_tensor in
-                                     decollate_batch(test_outputs)][0]
+                            [self.post_label(test_label_tensor).detach().cpu().astype(bool) for test_label_tensor in
+                             decollate_batch(test_labels)][0]
+                        mask_prep = \
+                        [self.post_pred(test_pred_tensor).detach().cpu().astype(bool) for test_pred_tensor in
+                         decollate_batch(test_outputs)][0]
                         # dice_metric1(y_pred=[self.post_pred(test_pred_tensor).detach().cpu() for test_pred_tensor in
                         #                      decollate_batch(test_outputs)],
                         #              y=[self.post_label(test_label_tensor).detach().cpu() for test_label_tensor in
@@ -495,17 +572,18 @@ class Trainer:
                     if batch['label'].max() > 0 and needed_memory < 4.5:
                         test_inputs, test_labels = (batch["image"].cuda(), batch["label"].cuda())
                         with torch.cuda.amp.autocast():
-                            test_outputs = sliding_window_inference(test_inputs, (96, 96, 96), self.num_samples,
+                            test_outputs = sliding_window_inference(test_inputs, self.spatial_size, self.num_samples,
                                                                     model, overlap=0.5, mode='gaussian'
                                                                     )
                             loss = self.loss_function(test_outputs.detach(), test_labels.detach()).item()
 
                         test_loss.append(loss)
                         mask_gt = \
-                        [self.post_label(test_label_tensor).detach().cpu().astype(bool) for test_label_tensor in
-                         decollate_batch(test_labels)][0]
-                        mask_prep = [self.post_pred(test_pred_tensor).detach().cpu().astype(bool) for test_pred_tensor in
-                                     decollate_batch(test_outputs)][0]
+                            [self.post_label(test_label_tensor).detach().cpu().astype(bool) for test_label_tensor in
+                             decollate_batch(test_labels)][0]
+                        mask_prep = \
+                        [self.post_pred(test_pred_tensor).detach().cpu().astype(bool) for test_pred_tensor in
+                         decollate_batch(test_outputs)][0]
                         test_inputs, test_outputs = test_inputs.detach().cpu(), test_outputs.detach().cpu()
                         del test_inputs, test_outputs
                         test_labels = None
@@ -526,7 +604,7 @@ class Trainer:
                         for ti, tl in zip(test_inputs, test_labels):
                             ti, tl = ti.cuda(), tl.cuda()
                             with torch.cuda.amp.autocast():
-                                test_outputs = sliding_window_inference(ti, (96, 96, 96), self.num_samples,
+                                test_outputs = sliding_window_inference(ti, self.spatial_size, self.num_samples,
                                                                         model, overlap=0.5, mode='gaussian'
                                                                         )
                             res.append(test_outputs.detach().cpu())
@@ -541,10 +619,11 @@ class Trainer:
 
                         test_loss.append(loss)
                         mask_gt = \
-                        [self.post_label(test_label_tensor).detach().cpu().astype(bool) for test_label_tensor in
-                         decollate_batch(test_labels)][0]
-                        mask_prep = [self.post_pred(test_pred_tensor).detach().cpu().astype(bool) for test_pred_tensor in
-                                     decollate_batch(test_outputs)][0]
+                            [self.post_label(test_label_tensor).detach().cpu().astype(bool) for test_label_tensor in
+                             decollate_batch(test_labels)][0]
+                        mask_prep = \
+                        [self.post_pred(test_pred_tensor).detach().cpu().astype(bool) for test_pred_tensor in
+                         decollate_batch(test_outputs)][0]
                         surf, dice = self.evaluation(label=mask_gt, pred=mask_prep)
                         test_labels, test_outputs = None, None
                         for k, v in surf.items():
