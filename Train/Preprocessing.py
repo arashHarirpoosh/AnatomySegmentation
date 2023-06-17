@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import torch
 import numpy as np
 import nibabel as nib
@@ -30,7 +31,7 @@ from monai.transforms import (
 )
 from monai.networks.nets import SwinUNETR
 
-spatial_size = (128, 128, 128)
+spatial_size = (96, 96, 96)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -42,14 +43,14 @@ def get_train_transform(num_samples):
             RandGaussianNoised(keys=["image"], prob=0.15, mean=0.0, std=0.1),  # ToDo: prob=0.15
             RandGaussianSmoothd(keys=["image"], sigma_x=(0.5, 1.5), sigma_y=(0.5, 1.5), sigma_z=(0.5, 1.5),
                                 approx='sampled', prob=0.2),  # ToDo: prob=0.2
-            RandAdjustContrastd(keys=["image"], gamma=(0.7, 1.5), prob=0.5),  # ToDo: prob=0.3
+            RandAdjustContrastd(keys=["image"], gamma=(0.7, 1.5), prob=0.3),  # ToDo: prob=0.3
             RandScaleIntensityd(keys=["image"], factors=(0.65, 1.5), prob=0.15),
             RandAffined(keys=["image", "label"],
                         rotate_range=(0.5235987755982988, 0.5235987755982988, 0.5235987755982988),
                         mode=['bilinear', 'nearest'], prob=0.2, device=device),
             RandAffined(keys=["image", "label"], scale_range=(0.3, 0.3, 0.3), mode=['bilinear', 'nearest'], prob=0.2,
                         device=device),
-            RandZoomd(keys=["image", "label"], min_zoom=0.5, max_zoom=1, mode=['bilinear', 'nearest'], prob=0.25),
+            # RandZoomd(keys=["image", "label"], min_zoom=0.5, max_zoom=1, mode=['bicubic', 'nearest'], prob=0.25),
 
             ScaleIntensityRanged(
                 keys=["image"],
@@ -196,7 +197,7 @@ def get_validation_transform():
             Orientationd(keys=["image", "label"], axcodes="RAS"),
             Spacingd(
                 keys=["image", "label"],
-                pixdim=(1.5, 1.5, 1.5),
+                pixdim=(2.0, 2.0, 2.0),
                 # pixdim=(3.0, 3.0, 3.0),
                 mode=("bilinear", "nearest"),
             ),
@@ -209,13 +210,35 @@ def get_validation_transform():
     )
 
 
+def create_file_path(root_path, label_name):
+    dataset = {}
+    splits = os.listdir(root_path)
+    for s in splits:
+        all_files = os.listdir(f'{root_path}/{s}')
+        root_folder = f'{root_path}/{s}'
+        dataset[s] = [{'image': f'{root_folder}/{i}/ct.nii.gz',
+                       'label': f'{root_folder}/{i}/segments/{label_name}.nii.gz'
+                       }
+                      for i in all_files if os.path.isfile(f'{root_folder}/{i}/ct.nii.gz') if
+                      len(np.unique(
+                          nib.load(f'{root_folder}/{i}/segments/{label_name}.nii.gz').get_fdata(dtype=np.float32))) > 23]
+    with open(f'Dataset_{label_name}.json', 'w') as f:
+        json.dump(dataset, f, indent=4)
+
+
+def get_split(file_path, split):
+    with open(file_path, 'r') as f:
+        split_data = json.load(f)
+    return split_data[split]
+
+
 def generate_file_path(root_path, label_name):
     all_files = os.listdir(root_path)
     return [{'image': f'{root_path}/{i}/ct.nii.gz',
              'label': f'{root_path}/{i}/segments/{label_name}.nii.gz'
              }
             for i in all_files if os.path.isfile(f'{root_path}/{i}/ct.nii.gz') if
-            nib.load(f'{root_path}/{i}/segments/{label_name}.nii.gz').get_fdata(dtype=np.float32).max() > 0]
+            len(np.unique(nib.load(f'{root_path}/{i}/segments/{label_name}.nii.gz').get_fdata(dtype=np.float32))) > 23]
 
 
 def filter_collate_fn(data_list, pad_to_shape=spatial_size):
