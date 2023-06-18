@@ -1,3 +1,31 @@
+analysis_class_map = {
+    "1": "spleen",
+    "2": "kidney_right",
+    "3": "kidney_left",
+    "4": "gallbladder",
+    "5": "liver",
+    "6": "stomach",
+    "7": "aorta",
+    "8": "inferior_vena_cava",
+    "9": "portal_vein_and_splenic_vein",
+    "10": "pancreas",
+    "11": "adrenal_gland_right",
+    "12": "adrenal_gland_left",
+    "13": "esophagus",
+    "14": "trachea",
+    "15": "pulmonary_artery",
+    "16": "ribs_vertebrae_sacrum",
+    "17": "heart",
+    "18": "iliac_artery_vena",
+    "19": "scapula",
+    "20": "clavicula",
+    "21": "lung_upper_lobe_left",
+    "22": "lung_lower_lobe_left",
+    "23": "lung_upper_lobe_right",
+    "24": "lung_middle_lobe_right",
+    "25": "lung_lower_lobe_right"
+}
+
 class_map = {
     "total": {
         1: "spleen",

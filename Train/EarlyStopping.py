@@ -30,6 +30,6 @@ class EarlyStopping:
                     print(f'Early Stopping patience: {self.counter}, best loss: {self.best_loss}, current_loss: {loss}')
                     if self.counter >= self.tolerance:
                         self.early_stop = True
-            if lr > self.min_lr:
+            if lr > self.min_lr and self.early_stop:
                 print(f'Maximum patience is ended, but more time is needed (lr > {self.min_lr})')
                 self.early_stop = False
